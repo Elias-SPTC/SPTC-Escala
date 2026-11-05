@@ -32,9 +32,4 @@
         android:fillColor="#1976D2"
         android:pathData="M41,48 h6 v6 h-6 z M51,48 h6 v6 h-6 z M61,48 h6 v6 h-6 z M41,57 h6 v6 h-6 z M51,57 h6 v6 h-6 z M61,57 h6 v6 h-6 z" />
 
-    <!-- Engineering Gear Accent -->
-    <path
-        android:fillColor="#FFC107"
-        android:pathData="M64,62 L67,59 L69,61 L66,64 L68,67 L71,67 L71,70 L68,70 L66,73 L69,76 L67,78 L64,75 L61,77 L61,80 L58,80 L58,77 L55,75 L52,78 L50,76 L53,73 L51,70 L48,70 L48,67 L51,67 L53,64 L50,61 L52,59 L55,62 L58,60 L58,57 L61,57 L61,60 Z" />
-
 </vector>
