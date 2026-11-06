@@ -9,8 +9,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
@@ -19,18 +24,24 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Engineering
 import androidx.compose.material.icons.filled.FileOpen
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Nightlight
+import androidx.compose.material.icons.filled.PersonSearch
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -587,6 +598,23 @@ class ScheduleViewModel(
             initialValue = emptyList()
         )
 
+    private val _selectedFilterEmployeeIds = MutableStateFlow<Set<Int>>(emptySet())
+    val selectedFilterEmployeeIds: StateFlow<Set<Int>> = _selectedFilterEmployeeIds.asStateFlow()
+
+    fun toggleFilterEmployee(employeeId: Int) {
+        val current = _selectedFilterEmployeeIds.value.toMutableSet()
+        if (current.contains(employeeId)) {
+            current.remove(employeeId)
+        } else {
+            current.add(employeeId)
+        }
+        _selectedFilterEmployeeIds.value = current
+    }
+
+    fun clearFilterEmployees() {
+        _selectedFilterEmployeeIds.value = emptySet()
+    }
+
     fun updateShiftStaff(
         shiftId: Long,
         pExpId: Int?,
@@ -676,9 +704,22 @@ class MainActivity : ComponentActivity() {
 fun MainScheduleScreen(viewModel: ScheduleViewModel) {
     val shifts by viewModel.scheduleList.collectAsStateWithLifecycle()
     val allEmployees by viewModel.allEmployees.collectAsStateWithLifecycle()
+    val selectedFilterIds by viewModel.selectedFilterEmployeeIds.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
+
+    var isFilterDialogOpen by remember { mutableStateOf(false) }
+
+    if (isFilterDialogOpen) {
+        FilterEmployeesDialog(
+            allEmployees = allEmployees,
+            selectedIds = selectedFilterIds,
+            onToggleId = { viewModel.toggleFilterEmployee(it) },
+            onClear = { viewModel.clearFilterEmployees() },
+            onDismiss = { isFilterDialogOpen = false }
+        )
+    }
 
     LaunchedEffect(uiState) {
         when (val state = uiState) {
@@ -763,7 +804,23 @@ fun MainScheduleScreen(viewModel: ScheduleViewModel) {
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("Escala SPTC (Plantão & Engenharia)") },
+                title = { Text("SPTC-Escalas") },
+                actions = {
+                    IconButton(onClick = { isFilterDialogOpen = true }) {
+                        BadgedBox(
+                            badge = {
+                                if (selectedFilterIds.isNotEmpty()) {
+                                    Badge { Text("${selectedFilterIds.size}") }
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FilterList,
+                                contentDescription = "Filtrar Servidores"
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -834,6 +891,8 @@ fun MainScheduleScreen(viewModel: ScheduleViewModel) {
                     MonthCalendar(
                         datesList = datesList,
                         selectedDate = selectedDate,
+                        shifts = shifts,
+                        selectedFilterIds = selectedFilterIds,
                         onDateSelected = { targetIndex ->
                             coroutineScope.launch {
                                 pagerState.animateScrollToPage(targetIndex)
@@ -863,6 +922,7 @@ fun MainScheduleScreen(viewModel: ScheduleViewModel) {
                                 ShiftCard(
                                     data = item,
                                     allEmployees = allEmployees,
+                                    selectedFilterIds = selectedFilterIds,
                                     onUpdateStaff = { pExpId, pFotId, eExpId, eFotId ->
                                         viewModel.updateShiftStaff(item.shift.id, pExpId, pFotId, eExpId, eFotId)
                                     }
@@ -884,6 +944,8 @@ fun MainScheduleScreen(viewModel: ScheduleViewModel) {
 fun MonthCalendar(
     datesList: List<String>,
     selectedDate: String?,
+    shifts: List<ShiftWithDetails>,
+    selectedFilterIds: Set<Int>,
     onDateSelected: (Int) -> Unit
 ) {
     if (datesList.isEmpty()) return
@@ -1036,6 +1098,26 @@ fun MonthCalendar(
 
                                 val targetDateStr = String.format(Locale.getDefault(), "%02d/%02d/%04d", dayNum, displayedMonth, displayedYear)
 
+                                val dayShifts = remember(shifts, targetDateStr) {
+                                    shifts.filter { it.shift.date == targetDateStr }
+                                }
+
+                                var hasPlantaoPerito = false
+                                var hasPlantaoFotografo = false
+                                var hasEngenhariaPerito = false
+                                var hasEngenhariaFotografo = false
+
+                                if (selectedFilterIds.isNotEmpty()) {
+                                    dayShifts.forEach { item ->
+                                        if (item.shift.plantaoExpertId in selectedFilterIds) hasPlantaoPerito = true
+                                        if (item.shift.plantaoPhotographerId in selectedFilterIds) hasPlantaoFotografo = true
+                                        if (item.shift.engenhariaExpertId in selectedFilterIds) hasEngenhariaPerito = true
+                                        if (item.shift.engenhariaPhotographerId in selectedFilterIds) hasEngenhariaFotografo = true
+                                    }
+                                }
+
+                                val isFilterMatched = hasPlantaoPerito || hasPlantaoFotografo || hasEngenhariaPerito || hasEngenhariaFotografo
+
                                 Surface(
                                     onClick = {
                                         val targetIdx = datesList.indexOf(targetDateStr)
@@ -1046,21 +1128,61 @@ fun MonthCalendar(
                                     shape = CircleShape,
                                     color = when {
                                         isSelected -> MaterialTheme.colorScheme.primary
-                                        hasShift -> MaterialTheme.colorScheme.primaryContainer
+                                        isFilterMatched -> MaterialTheme.colorScheme.secondaryContainer
+                                        hasShift -> MaterialTheme.colorScheme.surface
                                         else -> MaterialTheme.colorScheme.surface
                                     },
                                     contentColor = when {
                                         isSelected -> MaterialTheme.colorScheme.onPrimary
-                                        hasShift -> MaterialTheme.colorScheme.onPrimaryContainer
+                                        isFilterMatched -> MaterialTheme.colorScheme.onSecondaryContainer
+                                        hasShift -> MaterialTheme.colorScheme.onSurface
                                         else -> MaterialTheme.colorScheme.onSurface
                                     },
+                                    border = if (isFilterMatched && !isSelected) {
+                                        BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                                    } else null,
                                     modifier = Modifier.size(34.dp)
                                 ) {
-                                    Box(contentAlignment = Alignment.Center) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
                                         Text(
                                             text = "$dayNum",
                                             style = MaterialTheme.typography.bodySmall
                                         )
+
+                                        if (isFilterMatched) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(1.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                if (hasPlantaoPerito) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(4.dp)
+                                                            .clip(CircleShape)
+                                                            .background(Color(0xFF2E7D32))
+                                                    )
+                                                }
+                                                if (hasPlantaoFotografo) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(4.dp)
+                                                            .clip(CircleShape)
+                                                            .background(Color(0xFF1565C0))
+                                                    )
+                                                }
+                                                if (hasEngenhariaPerito || hasEngenhariaFotografo) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(4.dp)
+                                                            .clip(CircleShape)
+                                                            .background(Color(0xFFE65100))
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             } else {
@@ -1075,9 +1197,54 @@ fun MonthCalendar(
 }
 
 @Composable
+fun HighlightedStaffText(
+    roleLabel: String,
+    employee: EmployeeEntity?,
+    selectedFilterIds: Set<Int>
+) {
+    val isSelected = employee != null && selectedFilterIds.contains(employee.id)
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = "• $roleLabel: ",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        if (employee != null) {
+            if (isSelected) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = MaterialTheme.shapes.extraSmall
+                ) {
+                    Text(
+                        text = " ${employee.name} ⭐ ",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            } else {
+                Text(
+                    text = employee.name,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        } else {
+            Text(
+                text = "Não escalado",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
 fun ShiftCard(
     data: ShiftWithDetails,
     allEmployees: List<EmployeeEntity>,
+    selectedFilterIds: Set<Int>,
     onUpdateStaff: (pExpId: Int?, pFotId: Int?, eExpId: Int?, eFotId: Int?) -> Unit
 ) {
     var isEditing by remember { mutableStateOf(false) }
@@ -1148,14 +1315,8 @@ fun ShiftCard(
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.secondary
             )
-            Text(
-                text = "• Perito: ${data.plantaoExpert?.name?.ifBlank { null } ?: "Não escalado"}",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Text(
-                text = "• Fotógrafo: ${data.plantaoPhotographer?.name?.ifBlank { null } ?: "Não escalado"}",
-                style = MaterialTheme.typography.bodyMedium
-            )
+            HighlightedStaffText("Perito", data.plantaoExpert, selectedFilterIds)
+            HighlightedStaffText("Fotógrafo", data.plantaoPhotographer, selectedFilterIds)
 
             // Equipe de Engenharia
             val hasEngenharia = data.engenhariaExpert != null || data.engenhariaPhotographer != null || isShiftOne
@@ -1166,19 +1327,98 @@ fun ShiftCard(
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.tertiary
                 )
-                Text(
-                    text = "• Perito: ${data.engenhariaExpert?.name?.ifBlank { null } ?: "Não escalado"}",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                HighlightedStaffText("Perito", data.engenhariaExpert, selectedFilterIds)
                 if (isShiftOne || data.engenhariaPhotographer != null) {
-                    Text(
-                        text = "• Fotógrafo: ${data.engenhariaPhotographer?.name?.ifBlank { null } ?: "Não escalado"}",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                    HighlightedStaffText("Fotógrafo", data.engenhariaPhotographer, selectedFilterIds)
                 }
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun FilterEmployeesDialog(
+    allEmployees: List<EmployeeEntity>,
+    selectedIds: Set<Int>,
+    onToggleId: (Int) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val peritos = remember(allEmployees) {
+        allEmployees.filter { it.role == "PERITO" || it.role == "PERITO_ENGENHARIA" }
+    }
+    val fotografos = remember(allEmployees) {
+        allEmployees.filter { it.role == "FOTOGRAFO" }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("🔍 Filtrar Pessoas")
+                if (selectedIds.isNotEmpty()) {
+                    TextButton(onClick = onClear) {
+                        Text("Limpar (${selectedIds.size})", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("📋 Peritos:", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    peritos.forEach { emp ->
+                        val isSelected = selectedIds.contains(emp.id)
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { onToggleId(emp.id) },
+                            label = { Text(emp.name) },
+                            leadingIcon = if (isSelected) {
+                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                            } else null
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("📷 Fotógrafos:", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.tertiary)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    fotografos.forEach { emp ->
+                        val isSelected = selectedIds.contains(emp.id)
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { onToggleId(emp.id) },
+                            label = { Text(emp.name) },
+                            leadingIcon = if (isSelected) {
+                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                            } else null
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Concluir")
+            }
+        }
+    )
 }
 
 @Composable
