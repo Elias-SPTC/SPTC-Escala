@@ -1311,7 +1311,7 @@ fun ShiftCard(
 
             // Equipe de Plantão
             Text(
-                text = if (isShiftOne) "🚨 Plantão Diurno" else "🚨 Plantão Noturno",
+                text = "🚨 Plantão",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.secondary
             )
@@ -1323,7 +1323,7 @@ fun ShiftCard(
             if (hasEngenharia) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = if (isShiftOne) "⚙️ Engenharia (Diurno)" else "⚙️ Engenharia (Noturno)",
+                    text = "⚙️ Engenharia",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.tertiary
                 )
