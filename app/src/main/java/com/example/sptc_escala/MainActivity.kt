@@ -24,6 +24,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
@@ -31,8 +32,10 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Engineering
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Nightlight
 import androidx.compose.material.icons.filled.PersonSearch
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -53,6 +56,8 @@ import com.example.sptc_escala.ui.theme.SPTCEscalaTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import org.apache.poi.ss.usermodel.Cell
 import org.apache.poi.ss.usermodel.DataFormatter
 import org.apache.poi.ss.usermodel.Row
@@ -131,6 +136,9 @@ interface ShiftDao {
     @Transaction
     @Query("SELECT * FROM shifts ORDER BY date ASC, shiftNumber ASC")
     fun getAllShiftsWithDetails(): Flow<List<ShiftWithDetails>>
+
+    @Query("SELECT * FROM shifts")
+    suspend fun getAllShiftsList(): List<ShiftEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertShifts(shifts: List<ShiftEntity>)
@@ -568,8 +576,81 @@ class ScheduleExcelImporter(
 }
 
 // ==========================================
-// 4. VIEWMODEL E FACTORY
+// 4. BACKUP, VIEWMODEL E FACTORY
 // ==========================================
+
+fun exportBackupToJson(employees: List<EmployeeEntity>, shifts: List<ShiftEntity>): String {
+    val json = JSONObject()
+    json.put("version", 1)
+    json.put("appName", "SPTC-Escalas")
+    json.put("timestamp", System.currentTimeMillis())
+
+    val empArray = JSONArray()
+    employees.forEach { emp ->
+        val obj = JSONObject()
+        obj.put("id", emp.id)
+        obj.put("name", emp.name)
+        obj.put("role", emp.role)
+        empArray.put(obj)
+    }
+    json.put("employees", empArray)
+
+    val shiftArray = JSONArray()
+    shifts.forEach { s ->
+        val obj = JSONObject()
+        obj.put("id", s.id)
+        obj.put("date", s.date)
+        obj.put("shiftNumber", s.shiftNumber)
+        obj.put("plantaoExpertId", s.plantaoExpertId ?: JSONObject.NULL)
+        obj.put("plantaoPhotographerId", s.plantaoPhotographerId ?: JSONObject.NULL)
+        obj.put("engenhariaExpertId", s.engenhariaExpertId ?: JSONObject.NULL)
+        obj.put("engenhariaPhotographerId", s.engenhariaPhotographerId ?: JSONObject.NULL)
+        shiftArray.put(obj)
+    }
+    json.put("shifts", shiftArray)
+
+    return json.toString(2)
+}
+
+fun parseBackupFromJson(jsonString: String): Pair<List<EmployeeEntity>, List<ShiftEntity>> {
+    val json = JSONObject(jsonString)
+
+    val empList = mutableListOf<EmployeeEntity>()
+    if (json.has("employees")) {
+        val empArray = json.getJSONArray("employees")
+        for (i in 0 until empArray.length()) {
+            val obj = empArray.getJSONObject(i)
+            empList.add(
+                EmployeeEntity(
+                    id = obj.getInt("id"),
+                    name = obj.getString("name"),
+                    role = obj.getString("role")
+                )
+            )
+        }
+    }
+
+    val shiftList = mutableListOf<ShiftEntity>()
+    if (json.has("shifts")) {
+        val shiftArray = json.getJSONArray("shifts")
+        for (i in 0 until shiftArray.length()) {
+            val obj = shiftArray.getJSONObject(i)
+            shiftList.add(
+                ShiftEntity(
+                    id = obj.optLong("id", 0),
+                    date = obj.getString("date"),
+                    shiftNumber = obj.getInt("shiftNumber"),
+                    plantaoExpertId = if (obj.isNull("plantaoExpertId")) null else obj.getInt("plantaoExpertId"),
+                    plantaoPhotographerId = if (obj.isNull("plantaoPhotographerId")) null else obj.getInt("plantaoPhotographerId"),
+                    engenhariaExpertId = if (obj.isNull("engenhariaExpertId")) null else obj.getInt("engenhariaExpertId"),
+                    engenhariaPhotographerId = if (obj.isNull("engenhariaPhotographerId")) null else obj.getInt("engenhariaPhotographerId")
+                )
+            )
+        }
+    }
+
+    return Pair(empList, shiftList)
+}
 
 sealed interface ScheduleUiState {
     data object Idle : ScheduleUiState
@@ -579,6 +660,7 @@ sealed interface ScheduleUiState {
 }
 
 class ScheduleViewModel(
+    private val context: Context,
     private val shiftDao: ShiftDao,
     private val employeeDao: EmployeeDao,
     private val importer: ScheduleExcelImporter
@@ -654,12 +736,60 @@ class ScheduleViewModel(
         }
     }
 
+    fun exportBackup(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = ScheduleUiState.Loading
+            runCatching {
+                val employees = employeeDao.getAll()
+                val shifts = shiftDao.getAllShiftsList()
+                val jsonString = exportBackupToJson(employees, shifts)
+
+                context.contentResolver.openOutputStream(uri)?.use { stream ->
+                    stream.write(jsonString.toByteArray(Charsets.UTF_8))
+                } ?: throw IllegalStateException("Não foi possível salvar o arquivo de backup.")
+
+                "Backup exportado com sucesso! (${employees.size} cadastros, ${shifts.size} turnos)"
+            }.onSuccess { msg ->
+                _uiState.value = ScheduleUiState.Success(msg)
+            }.onFailure { ex ->
+                _uiState.value = ScheduleUiState.Error(ex.localizedMessage ?: "Erro ao exportar backup.")
+            }
+        }
+    }
+
+    fun restoreBackup(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = ScheduleUiState.Loading
+            runCatching {
+                val jsonString = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    stream.bufferedReader(Charsets.UTF_8).readText()
+                } ?: throw IllegalStateException("Não foi possível ler o arquivo de backup.")
+
+                val (employees, shifts) = parseBackupFromJson(jsonString)
+
+                if (employees.isEmpty() && shifts.isEmpty()) {
+                    throw IllegalArgumentException("O arquivo de backup selecionado está vazio ou é inválido.")
+                }
+
+                employeeDao.insertAll(employees)
+                shiftDao.insertShifts(shifts)
+
+                "Backup restaurado com sucesso! (${employees.size} cadastros, ${shifts.size} turnos carregados)"
+            }.onSuccess { msg ->
+                _uiState.value = ScheduleUiState.Success(msg)
+            }.onFailure { ex ->
+                _uiState.value = ScheduleUiState.Error(ex.localizedMessage ?: "Erro ao restaurar backup. Verifique se o arquivo é válido.")
+            }
+        }
+    }
+
     fun dismissState() {
         _uiState.value = ScheduleUiState.Idle
     }
 }
 
 class ScheduleViewModelFactory(
+    private val context: Context,
     private val shiftDao: ShiftDao,
     private val employeeDao: EmployeeDao,
     private val importer: ScheduleExcelImporter
@@ -667,7 +797,7 @@ class ScheduleViewModelFactory(
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(ScheduleViewModel::class.java)) {
-            return ScheduleViewModel(shiftDao, employeeDao, importer) as T
+            return ScheduleViewModel(context, shiftDao, employeeDao, importer) as T
         }
         throw IllegalArgumentException("Classe ViewModel desconhecida")
     }
@@ -688,7 +818,7 @@ class MainActivity : ComponentActivity() {
             employeeDao = database.employeeDao(),
             shiftDao = database.shiftDao()
         )
-        val viewModelFactory = ScheduleViewModelFactory(database.shiftDao(), database.employeeDao(), importer)
+        val viewModelFactory = ScheduleViewModelFactory(applicationContext, database.shiftDao(), database.employeeDao(), importer)
 
         setContent {
             SPTCEscalaTheme {
@@ -745,6 +875,18 @@ fun MainScheduleScreen(viewModel: ScheduleViewModel) {
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         uri?.let { viewModel.importEngenhariaFile(it) }
+    }
+
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        uri?.let { viewModel.exportBackup(it) }
+    }
+
+    val restoreBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let { viewModel.restoreBackup(it) }
     }
 
     val datesList = remember(shifts) {
@@ -819,6 +961,34 @@ fun MainScheduleScreen(viewModel: ScheduleViewModel) {
                                 contentDescription = "Filtrar Servidores"
                             )
                         }
+                    }
+
+                    var showMenu by remember { mutableStateOf(false) }
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Mais opções")
+                    }
+
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Fazer Backup (Exportar)") },
+                            leadingIcon = { Icon(Icons.Default.Backup, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                val defaultFileName = "SPTC_Escalas_Backup_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())}.json"
+                                exportBackupLauncher.launch(defaultFileName)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Restaurar Backup (Importar)") },
+                            leadingIcon = { Icon(Icons.Default.Restore, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                restoreBackupLauncher.launch(arrayOf("application/json", "*/*"))
+                            }
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
